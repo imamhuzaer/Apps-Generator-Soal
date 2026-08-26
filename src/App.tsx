@@ -3,9 +3,15 @@ import { Navbar } from "./components/Navbar";
 import { ConfigForm } from "./components/ConfigForm";
 import { PreviewPaper } from "./components/PreviewPaper";
 import { GFormModal } from "./components/GFormModal";
+import { ApiKeyModal } from "./components/ApiKeyModal";
 import { FooterCredit } from "./components/FooterCredit";
 import { GeneratorConfig, SoalItem } from "./types";
-import { AlertCircle, CheckCircle2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Key, RefreshCw } from "lucide-react";
+import {
+  generateSoalDirect,
+  generateDiagramDirect,
+  getClientGeminiApiKey,
+} from "./services/geminiService";
 
 export default function App() {
   const [config, setConfig] = useState<GeneratorConfig>({
@@ -39,6 +45,7 @@ export default function App() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [generatingDiagramIndex, setGeneratingDiagramIndex] = useState<number | null>(null);
   const [isGFormModalOpen, setIsGFormModalOpen] = useState(false);
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,27 +67,68 @@ export default function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/generate-soal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(config),
-      });
+      let generatedItems: SoalItem[] | null = null;
+      let usedFallback = false;
 
-      const data = await response.json();
+      // 1. First attempt: call backend API endpoint (/api/generate-soal)
+      try {
+        const response = await fetch("/api/generate-soal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
 
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP error: ${response.status}`);
+        const contentType = response.headers.get("content-type") || "";
+
+        if (response.ok && contentType.includes("application/json")) {
+          const data = await response.json();
+          if (Array.isArray(data.items) && data.items.length > 0) {
+            generatedItems = data.items;
+          }
+        } else if (response.status === 404 || !contentType.includes("application/json")) {
+          // Endpoint returned HTML 404 (e.g. Vercel static or GitHub Pages without serverless)
+          console.warn("Backend /api/generate-soal unreachable (404/HTML). Switching to direct client Gemini SDK...");
+          usedFallback = true;
+        } else {
+          // Response returned JSON with error status
+          const data = await response.json().catch(() => null);
+          const errMsg = data?.error || `Server error (HTTP ${response.status})`;
+          if (errMsg.includes("GEMINI_API_KEY") || errMsg.includes("missing")) {
+            usedFallback = true;
+          } else {
+            throw new Error(errMsg);
+          }
+        }
+      } catch (fetchErr: any) {
+        console.warn("Fetch error, attempting direct Gemini client fallback:", fetchErr);
+        usedFallback = true;
       }
 
-      if (!Array.isArray(data.items) || data.items.length === 0) {
-        throw new Error("Format hasil soal dari AI tidak sesuai.");
+      // 2. Second attempt: Direct Client SDK if backend was unreachable or missing server key
+      if (!generatedItems && usedFallback) {
+        const clientKey = getClientGeminiApiKey();
+        if (!clientKey) {
+          throw new Error(
+            "Backend serverless belum menerima GEMINI_API_KEY. Silakan masukkan Gemini API Key di menu 'Set API Key' di atas, atau tambahkan GEMINI_API_KEY pada Environment Variables Vercel."
+          );
+        }
+        generatedItems = await generateSoalDirect(config, clientKey);
       }
 
-      setItems(data.items);
-      setSuccessMessage(`Berhasil menyusun ${data.items.length} butir soal lengkap!`);
+      if (!generatedItems || generatedItems.length === 0) {
+        throw new Error("Gagal mendapatkan format soal valid dari AI. Coba lagi.");
+      }
+
+      setItems(generatedItems);
+      setSuccessMessage(
+        `Berhasil menyusun ${generatedItems.length} butir soal lengkap! ${
+          usedFallback ? "(Mode Client Direct)" : ""
+        }`
+      );
     } catch (err: any) {
       console.error("Gagal generate:", err);
-      setErrorMessage(err.message || "Gagal membuat soal. Pastikan koneksi dan API Key aktif.");
+      const msg = err.message || "Gagal membuat soal. Pastikan koneksi dan API Key aktif.";
+      setErrorMessage(msg);
     } finally {
       setIsLoading(false);
     }
@@ -92,31 +140,55 @@ export default function App() {
 
     setGeneratingDiagramIndex(index);
     try {
-      const res = await fetch("/api/generate-diagram", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          questionText: targetItem.pertanyaan,
-          mapel: config.mapel,
-          materi: config.materi,
-        }),
-      });
+      let svgResult: string | null = null;
+      let usedFallback = false;
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Gagal membuat diagram");
+      // 1. Try backend /api/generate-diagram
+      try {
+        const res = await fetch("/api/generate-diagram", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            questionText: targetItem.pertanyaan,
+            mapel: config.mapel,
+            materi: config.materi,
+          }),
+        });
+
+        const contentType = res.headers.get("content-type") || "";
+        if (res.ok && contentType.includes("application/json")) {
+          const data = await res.json();
+          if (data.svg) {
+            svgResult = data.svg;
+          }
+        } else {
+          usedFallback = true;
+        }
+      } catch {
+        usedFallback = true;
       }
 
-      if (data.svg) {
+      // 2. Direct fallback
+      if (!svgResult && usedFallback) {
+        svgResult = await generateDiagramDirect(
+          targetItem.pertanyaan,
+          config.mapel,
+          config.materi
+        );
+      }
+
+      if (svgResult) {
         const updated = [...items];
         updated[index] = {
           ...updated[index],
-          generatedSvg: data.svg,
+          generatedSvg: svgResult,
         };
         setItems(updated);
+      } else {
+        throw new Error("Tidak dapat membuat diagram SVG.");
       }
     } catch (err: any) {
-      alert("Gagal membuat gambar diagram SVG: " + err.message);
+      alert("Gagal membuat diagram SVG: " + err.message);
     } finally {
       setGeneratingDiagramIndex(null);
     }
@@ -151,13 +223,22 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0A0A0A] font-sans text-gray-300">
-      <Navbar />
+      <Navbar onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)} />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-6">
         {errorMessage && (
-          <div className="mb-4 p-4 bg-red-500/10 border border-red-500/20 text-red-300 rounded-xl text-xs flex items-center gap-2.5 shadow-lg">
-            <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-            <div className="font-medium">{errorMessage}</div>
+          <div className="mb-4 p-4 bg-red-500/10 border border-red-500/20 text-red-300 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg">
+            <div className="flex items-center gap-2.5">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <div className="font-medium leading-relaxed">{errorMessage}</div>
+            </div>
+            <button
+              onClick={() => setIsApiKeyModalOpen(true)}
+              className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold transition-colors text-[11px]"
+            >
+              <Key className="w-3.5 h-3.5" />
+              <span>Set API Key</span>
+            </button>
           </div>
         )}
 
@@ -202,6 +283,16 @@ export default function App() {
         mapel={config.mapel}
         materi={config.materi}
       />
+
+      <ApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        onClose={() => setIsApiKeyModalOpen(false)}
+        onKeySaved={() => {
+          setErrorMessage(null);
+          setSuccessMessage("API Key berhasil disimpan di browser Anda!");
+        }}
+      />
     </div>
   );
 }
+

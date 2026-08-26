@@ -1,7 +1,11 @@
 import React from "react";
-import { Sparkles, Terminal } from "lucide-react";
+import { Sparkles, Terminal, Key } from "lucide-react";
 
-export const Navbar: React.FC = () => {
+interface NavbarProps {
+  onOpenApiKeyModal?: () => void;
+}
+
+export const Navbar: React.FC<NavbarProps> = ({ onOpenApiKeyModal }) => {
   return (
     <header className="no-print bg-[#0F0F0F] border-b border-white/5 text-gray-300 sticky top-0 z-30">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
@@ -25,12 +29,23 @@ export const Navbar: React.FC = () => {
           </div>
         </div>
 
-        {/* Right: Status Pill & Author Credit */}
-        <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-2 px-3 py-1 bg-green-500/10 rounded-full border border-green-500/20">
+        {/* Right: API Key Config & Author Credit */}
+        <div className="flex items-center gap-2.5">
+          {onOpenApiKeyModal && (
+            <button
+              onClick={onOpenApiKeyModal}
+              title="Konfigurasi API Key untuk Vercel / GitHub"
+              className="flex items-center gap-1.5 px-2.5 py-1 bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white text-xs font-medium rounded-lg border border-white/10 shadow-xs transition-colors"
+            >
+              <Key className="w-3.5 h-3.5 text-blue-400" />
+              <span className="text-[11px] hidden sm:inline">Set API Key</span>
+            </button>
+          )}
+
+          <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-green-500/10 rounded-full border border-green-500/20">
             <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></div>
             <span className="text-[11px] font-mono text-green-400 font-medium">
-              API: GEMINI 3.7 ACTIVE
+              GEMINI 3.7
             </span>
           </div>
 
@@ -43,3 +58,4 @@ export const Navbar: React.FC = () => {
     </header>
   );
 };
+
