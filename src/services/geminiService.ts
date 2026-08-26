@@ -1,6 +1,70 @@
 import { GoogleGenAI } from "@google/genai";
 import { GeneratorConfig, SoalItem } from "../types";
 
+export const FALLBACK_MODELS = [
+  "gemini-3.7-flash",
+  "gemini-flash-latest",
+  "gemini-3.1-flash-lite",
+];
+
+export async function callGeminiWithResilience(
+  ai: GoogleGenAI,
+  prompt: string,
+  config?: {
+    systemInstruction?: string;
+    responseMimeType?: string;
+  }
+) {
+  let lastError: any = null;
+
+  for (const model of FALLBACK_MODELS) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            ...(config?.responseMimeType ? { responseMimeType: config.responseMimeType } : {}),
+            ...(config?.systemInstruction ? { systemInstruction: config.systemInstruction } : {}),
+          },
+        });
+        if (response && response.text) {
+          return response;
+        }
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = err?.message || String(err);
+        const isTransient =
+          err?.status === 503 ||
+          err?.status === 429 ||
+          err?.status === 500 ||
+          errMsg.includes("503") ||
+          errMsg.includes("429") ||
+          errMsg.includes("high demand") ||
+          errMsg.includes("UNAVAILABLE") ||
+          errMsg.includes("RESOURCE_EXHAUSTED") ||
+          errMsg.includes("overloaded");
+
+        if (isTransient && attempt === 0) {
+          // Wait 1.5s then retry once on same model
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+        // If not transient or already retried, fall through to next model
+        break;
+      }
+    }
+  }
+
+  const lastMsg = lastError?.message || String(lastError);
+  if (lastMsg.includes("503") || lastMsg.includes("high demand") || lastMsg.includes("UNAVAILABLE")) {
+    throw new Error(
+      "Server AI sedang mengalami antrean tinggi (503). Sistem telah mencoba alternatif model. Silakan coba klik Generate lagi."
+    );
+  }
+  throw lastError;
+}
+
 export function buildGenerateSoalPrompt(config: GeneratorConfig): string {
   let kbcInstruction = "";
   if (config.kurikulum && (config.kurikulum.includes("Cinta") || config.kurikulum.includes("KBC"))) {
@@ -157,14 +221,10 @@ export async function generateSoalDirect(config: GeneratorConfig, customApiKey?:
   });
 
   const prompt = buildGenerateSoalPrompt(config);
-  const response = await ai.models.generateContent({
-    model: "gemini-3.7-flash",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      systemInstruction:
-        "Anda adalah asisten AI spesialis kurikulum dan evaluasi pendidikan Indonesia. Anda menghasilkan JSON murni tanpa markdown wrapper.",
-    },
+  const response = await callGeminiWithResilience(ai, prompt, {
+    responseMimeType: "application/json",
+    systemInstruction:
+      "Anda adalah asisten AI spesialis kurikulum dan evaluasi pendidikan Indonesia. Anda menghasilkan JSON murni tanpa markdown wrapper.",
   });
 
   return parseSoalJson(response.text || "");
@@ -194,13 +254,9 @@ export async function generateDiagramDirect(
   });
 
   const prompt = buildDiagramPrompt(questionText, mapel, materi);
-  const response = await ai.models.generateContent({
-    model: "gemini-3.7-flash",
-    contents: prompt,
-    config: {
-      systemInstruction:
-        "Anda adalah AI pembuat diagram vektor SVG edukatif. Hasilkan HANYA kode SVG murni tanpa wrapper markdown.",
-    },
+  const response = await callGeminiWithResilience(ai, prompt, {
+    systemInstruction:
+      "Anda adalah AI pembuat diagram vektor SVG edukatif. Hasilkan HANYA kode SVG murni tanpa wrapper markdown.",
   });
 
   return parseSvgString(response.text || "");

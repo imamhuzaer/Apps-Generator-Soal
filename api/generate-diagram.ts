@@ -15,6 +15,66 @@ function getGeminiClient(): GoogleGenAI {
   });
 }
 
+const FALLBACK_MODELS = [
+  "gemini-3.7-flash",
+  "gemini-flash-latest",
+  "gemini-3.1-flash-lite",
+];
+
+async function callGeminiWithResilience(
+  ai: GoogleGenAI,
+  prompt: string,
+  config?: {
+    systemInstruction?: string;
+  }
+) {
+  let lastError: any = null;
+
+  for (const model of FALLBACK_MODELS) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            ...(config?.systemInstruction ? { systemInstruction: config.systemInstruction } : {}),
+          },
+        });
+        if (response && response.text) {
+          return response;
+        }
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = err?.message || String(err);
+        const isTransient =
+          err?.status === 503 ||
+          err?.status === 429 ||
+          err?.status === 500 ||
+          errMsg.includes("503") ||
+          errMsg.includes("429") ||
+          errMsg.includes("high demand") ||
+          errMsg.includes("UNAVAILABLE") ||
+          errMsg.includes("RESOURCE_EXHAUSTED") ||
+          errMsg.includes("overloaded");
+
+        if (isTransient && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
+        }
+        break;
+      }
+    }
+  }
+
+  const lastMsg = lastError?.message || String(lastError);
+  if (lastMsg.includes("503") || lastMsg.includes("high demand") || lastMsg.includes("UNAVAILABLE")) {
+    throw new Error(
+      "Server AI sedang mengalami antrean tinggi (503). Sistem telah mencoba model alternatif. Silakan coba klik Generate lagi."
+    );
+  }
+  throw lastError;
+}
+
 export default async function handler(req: any, res: any) {
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -50,13 +110,9 @@ Ketentuan Output:
 3. Gunakan atribut viewBox="0 0 500 280", background terang yang kontras (#f8fafc), garis yang rapi (#1e293b, #3b82f6, #10b981), font sans-serif yang tajam, dan label angka/huruf yang mudah dibaca.
 4. Buat visual yang akurat secara ilmiah / matematis (misal: segitiga siku-siku dengan sudut & sisi yang diberi label, grafik parabola/fungsi koordinat kartesius yang tepat, diagram Venn, rangkaian listrik berseri/paralel, bagan sel/ekosistem, atau tabel perbandingan).`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
-      contents: promptText,
-      config: {
-        systemInstruction:
-          "Anda adalah AI pembuat diagram vektor SVG edukatif. Hasilkan HANYA kode SVG murni tanpa wrapper markdown.",
-      },
+    const response = await callGeminiWithResilience(ai, promptText, {
+      systemInstruction:
+        "Anda adalah AI pembuat diagram vektor SVG edukatif. Hasilkan HANYA kode SVG murni tanpa wrapper markdown.",
     });
 
     let rawSvg = (response.text || "")

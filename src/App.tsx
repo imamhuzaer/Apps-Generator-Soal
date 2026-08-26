@@ -71,6 +71,9 @@ export default function App() {
       let usedFallback = false;
 
       // 1. First attempt: call backend API endpoint (/api/generate-soal)
+      let backendErrorMsg: string | null = null;
+      let isBackendUnavailableOr404 = false;
+
       try {
         const response = await fetch("/api/generate-soal", {
           method: "POST",
@@ -84,23 +87,32 @@ export default function App() {
           const data = await response.json();
           if (Array.isArray(data.items) && data.items.length > 0) {
             generatedItems = data.items;
+          } else {
+            throw new Error("Format hasil soal dari AI tidak sesuai.");
           }
         } else if (response.status === 404 || !contentType.includes("application/json")) {
-          // Endpoint returned HTML 404 (e.g. Vercel static or GitHub Pages without serverless)
-          console.warn("Backend /api/generate-soal unreachable (404/HTML). Switching to direct client Gemini SDK...");
+          // Endpoint returned HTML 404 (e.g. Vercel static hosting or GitHub Pages without serverless)
+          isBackendUnavailableOr404 = true;
           usedFallback = true;
         } else {
-          // Response returned JSON with error status
+          // Response returned JSON with error status (500, 503, 400, etc.)
           const data = await response.json().catch(() => null);
           const errMsg = data?.error || `Server error (HTTP ${response.status})`;
           if (errMsg.includes("GEMINI_API_KEY") || errMsg.includes("missing")) {
             usedFallback = true;
+            backendErrorMsg = errMsg;
           } else {
+            // Real AI / Server error (e.g. 503, rate limit, parse error) -> show this directly!
             throw new Error(errMsg);
           }
         }
       } catch (fetchErr: any) {
-        console.warn("Fetch error, attempting direct Gemini client fallback:", fetchErr);
+        // If it's already an explicit Error from line 99, re-throw it so we don't mask it
+        if (fetchErr?.message && !fetchErr.message.includes("Failed to fetch") && !fetchErr.message.includes("NetworkError")) {
+          throw fetchErr;
+        }
+        // Network connection error to backend
+        isBackendUnavailableOr404 = true;
         usedFallback = true;
       }
 
@@ -108,15 +120,18 @@ export default function App() {
       if (!generatedItems && usedFallback) {
         const clientKey = getClientGeminiApiKey();
         if (!clientKey) {
+          if (backendErrorMsg) {
+            throw new Error(backendErrorMsg);
+          }
           throw new Error(
-            "Backend serverless belum menerima GEMINI_API_KEY. Silakan masukkan Gemini API Key di menu 'Set API Key' di atas, atau tambahkan GEMINI_API_KEY pada Environment Variables Vercel."
+            "Backend server belum memiliki GEMINI_API_KEY. Silakan masukkan Gemini API Key di menu 'Set API Key' di atas, atau set GEMINI_API_KEY pada Environment Variables hosting Anda."
           );
         }
         generatedItems = await generateSoalDirect(config, clientKey);
       }
 
       if (!generatedItems || generatedItems.length === 0) {
-        throw new Error("Gagal mendapatkan format soal valid dari AI. Coba lagi.");
+        throw new Error("Gagal mendapatkan format soal valid dari AI. Silakan coba lagi.");
       }
 
       setItems(generatedItems);
@@ -161,10 +176,21 @@ export default function App() {
           if (data.svg) {
             svgResult = data.svg;
           }
-        } else {
+        } else if (res.status === 404 || !contentType.includes("application/json")) {
           usedFallback = true;
+        } else {
+          const errData = await res.json().catch(() => null);
+          const errMsg = errData?.error || `HTTP ${res.status}`;
+          if (errMsg.includes("GEMINI_API_KEY") || errMsg.includes("missing")) {
+            usedFallback = true;
+          } else {
+            throw new Error(errMsg);
+          }
         }
-      } catch {
+      } catch (fErr: any) {
+        if (fErr?.message && !fErr.message.includes("Failed to fetch")) {
+          throw fErr;
+        }
         usedFallback = true;
       }
 
