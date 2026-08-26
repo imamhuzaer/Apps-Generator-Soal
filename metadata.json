@@ -1,0 +1,6 @@
+{
+  "name": "Generator Soal AI",
+  "description": "Aplikasi Generator Soal Ujian Kurikulum Merdeka, K13, dan KBC dengan MathJax LaTeX, pembuatan diagram visual AI, Kartu Soal, Rubrik Penilaian, serta Export ke Word dan Google Form.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
